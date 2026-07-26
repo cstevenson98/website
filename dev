@@ -140,8 +140,17 @@ cmd_deploy() {
   fi
 
   log "Syncing $SITE_DIR -> gs://$bucket"
+  # no-cache: browsers revalidate on each visit so deploys show up without a hard refresh.
+  # When you add fingerprinted assets later, give those a long max-age and keep HTML on no-cache.
   gcloud_run gcloud storage rsync "$SITE_DIR" "gs://$bucket" \
-    --recursive --delete-unmatched-destination-objects
+    --recursive \
+    --delete-unmatched-destination-objects \
+    --cache-control="no-cache"
+
+  # rsync skips unchanged files (and their metadata); refresh Cache-Control on everything.
+  gcloud_run gcloud storage objects update "gs://$bucket/**" \
+    --cache-control="no-cache" \
+    --recursive
 
   url_map="$(doppler run -- printenv URL_MAP_NAME 2>/dev/null || true)"
   if [ -z "$url_map" ] || [ "$url_map" = "null" ]; then
