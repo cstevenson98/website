@@ -1,6 +1,11 @@
 import markdownIt from "markdown-it";
 import { katex } from "@mdit/plugin-katex";
 
+// When hosting at https://storage.googleapis.com/<bucket>/..., absolute
+// paths like /css/... resolve to storage.googleapis.com/css (wrong bucket).
+// Deploy sets PATH_PREFIX=/<bucket>/ so | url and asset links stay under the bucket.
+const pathPrefix = process.env.PATH_PREFIX || "/";
+
 /** @param {import("@11ty/eleventy").UserConfig} eleventyConfig */
 export default function (eleventyConfig) {
   eleventyConfig.addPassthroughCopy("src/css");
@@ -38,7 +43,20 @@ export default function (eleventyConfig) {
     return date.toISOString().slice(0, 10);
   });
 
+  // GCS object URLs don't serve directory indexes over the XML API host.
+  // Rewrite trailing-slash links to .../index.html when deploying with a prefix.
+  if (pathPrefix !== "/") {
+    eleventyConfig.addTransform("gcs-index-html", (content, outputPath) => {
+      if (!outputPath || !outputPath.endsWith(".html")) return content;
+      return content.replace(
+        /(href|src)="([^"]+\/)(?!index\.html)"/g,
+        '$1="$2index.html"',
+      );
+    });
+  }
+
   return {
+    pathPrefix,
     dir: {
       input: "src",
       output: "_site",

@@ -57,6 +57,9 @@ Or: **Actions → Deploy → Run workflow** on `main` (needs `DOPPLER_TOKEN` on 
 Live URL (no custom domain yet):  
 https://storage.googleapis.com/personal-website-503008-site/index.html
 
+Deploy builds with `PATH_PREFIX=/<bucket>/` so CSS and post links work on that
+path-style GCS URL. Local `./dev serve` keeps prefix `/`.
+
 ## Common commands
 
 Run `./dev help`. GCP commands use `doppler run --`.
