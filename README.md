@@ -11,6 +11,7 @@ No backend, no build step yet — just static files in `site/`.
 
 ```
 .
+├── .github/workflows/  # GitHub Actions (manual deploy on main)
 ├── dev                 # management script (serve / terraform / deploy)
 ├── site/               # static site content (deployed to the bucket)
 │   ├── index.html
@@ -56,16 +57,31 @@ No backend, no build step yet — just static files in `site/`.
 ```bash
 ./dev init          # terraform init (backend configured from env)
 ./dev plan          # review changes
-./dev apply         # create the bucket (+ LB/CDN/TLS if TF_VAR_domain_name set)
+./dev apply         # create the bucket (+ LB/CDN/TLS if DOMAIN_NAME set)
 ./dev deploy        # upload site/ to the bucket and invalidate the CDN
 ```
 
-If you set `TF_VAR_domain_name`, point your DNS **A record** at the load balancer
+If you set `DOMAIN_NAME`, point your DNS **A record** at the load balancer
 IP (`./dev outputs` shows `load_balancer_ip`). The managed certificate becomes
 active a few minutes to a few hours after DNS resolves.
 
 Before a domain is configured, the site is reachable at the `bucket_public_url`
 output.
+
+## GitHub Actions (manual deploy)
+
+A **Deploy** workflow runs only from `main` via the Actions UI button
+(`workflow_dispatch`). It uses Doppler for secrets — the same path as local.
+
+One-time setup:
+
+1. In Doppler → project `website` → config `dev` (or `prd`), create a
+   **Service Token**.
+2. In GitHub → repo → Settings → Secrets and variables → Actions, add
+   `DOPPLER_TOKEN` with that token value.
+3. Push to `main`, then: **Actions → Deploy → Run workflow**.
+
+The job installs Doppler + gcloud and runs `./dev deploy`.
 
 ## Local preview
 

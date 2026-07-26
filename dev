@@ -124,11 +124,18 @@ cmd_tf()       { run_tf "$@"; }
 cmd_fmt() { require terraform; ( cd "$TF_DIR" && terraform fmt -recursive "$@" ); }
 
 # Sync site/ to the website bucket and invalidate the CDN cache.
+# Bucket comes from Doppler (BUCKET_NAME) so CI can deploy without terraform.
+# CDN invalidation uses URL_MAP_NAME if set, else terraform output when available.
 cmd_deploy() {
+  require doppler
   local bucket url_map
-  bucket="$(tf_output website_bucket)"
+  bucket="$(doppler run -- printenv BUCKET_NAME 2>/dev/null || true)"
   if [ -z "$bucket" ]; then
-    echo "error: could not read 'website_bucket' output. Run './dev apply' first." >&2
+    bucket="$(tf_output website_bucket)"
+  fi
+  if [ -z "$bucket" ]; then
+    echo "error: BUCKET_NAME not set and could not read 'website_bucket' output." >&2
+    echo "Set BUCKET_NAME in Doppler, or run './dev apply' first." >&2
     exit 1
   fi
 
@@ -136,7 +143,10 @@ cmd_deploy() {
   gcloud_run gcloud storage rsync "$SITE_DIR" "gs://$bucket" \
     --recursive --delete-unmatched-destination-objects
 
-  url_map="$(tf_output url_map_name)"
+  url_map="$(doppler run -- printenv URL_MAP_NAME 2>/dev/null || true)"
+  if [ -z "$url_map" ] || [ "$url_map" = "null" ]; then
+    url_map="$(tf_output url_map_name)"
+  fi
   if [ -n "$url_map" ] && [ "$url_map" != "null" ]; then
     log "Invalidating CDN cache for url-map '$url_map'"
     gcloud_run gcloud compute url-maps invalidate-cdn-cache "$url_map" \

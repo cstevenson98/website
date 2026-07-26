@@ -1,6 +1,7 @@
 # Secrets / local env
 .env
 .env.local
+token.txt
 *.tfvars
 !*.example.tfvars
 
