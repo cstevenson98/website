@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+#
+# dev - management script for the static website.
+#
+# All commands that touch GCP run under `doppler run --` so secrets/config
+# (GCP project, region, service-account JSON, state bucket, TF_VAR_*) are
+# injected from Doppler rather than living on disk. See .env.example for the
+# full list of variables Doppler is expected to provide.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TF_DIR="$ROOT_DIR/terraform"
+SITE_DIR="$ROOT_DIR/site"
+SERVE_PORT="${SERVE_PORT:-8000}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "error: required command '$1' not found in PATH" >&2
+    exit 1
+  }
+}
+
+log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+
+# Doppler secret names must be UPPERCASE, but Terraform expects lowercase
+# TF_VAR_<name> env vars. This snippet, run inside the Doppler environment,
+# maps the uppercase secrets to the TF_VAR_* names Terraform reads. GOOGLE_PROJECT
+# and GOOGLE_REGION do double duty (gcloud + Terraform).
+TFVAR_MAP='
+  export TF_VAR_project_id="${GOOGLE_PROJECT:?GOOGLE_PROJECT not set}"
+  export TF_VAR_region="${GOOGLE_REGION:?GOOGLE_REGION not set}"
+  export TF_VAR_bucket_name="${BUCKET_NAME:?BUCKET_NAME not set}"
+  export TF_VAR_domain_name="${DOMAIN_NAME:-}"
+'
+
+# Run terraform inside the terraform dir with Doppler-injected secrets, after
+# mapping uppercase Doppler names to TF_VAR_* variables.
+run_tf() {
+  require doppler
+  require terraform
+  ( cd "$TF_DIR" && doppler run -- sh -c "$TFVAR_MAP"'exec terraform "$@"' _ "$@" )
+}
+
+# Read a single terraform output value (empty string if unset/absent).
+tf_output() {
+  ( cd "$TF_DIR" && doppler run -- terraform output -raw "$1" 2>/dev/null ) || true
+}
+
+# Run a command as $@ with gcloud authenticated from GOOGLE_CREDENTIALS.
+# When GOOGLE_CREDENTIALS is set, an isolated gcloud config dir is used so the
+# service-account activation never pollutes the user's real gcloud login.
+gcloud_run() {
+  require doppler
+  require gcloud
+  doppler run -- bash -c '
+    set -euo pipefail
+    if [ -n "${GOOGLE_CREDENTIALS:-}" ]; then
+      cfg="$(mktemp -d)"
+      trap "rm -rf \"$cfg\"" EXIT
+      export CLOUDSDK_CONFIG="$cfg"
+      printf "%s" "$GOOGLE_CREDENTIALS" > "$cfg/key.json"
+      gcloud auth activate-service-account --key-file="$cfg/key.json" --quiet >/dev/null 2>&1
+    fi
+    if [ -n "${GOOGLE_PROJECT:-}" ]; then
+      gcloud config set project "$GOOGLE_PROJECT" --quiet >/dev/null 2>&1
+    fi
+    exec "$@"
+  ' _ "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_serve() {
+  require python3
+  log "Serving $SITE_DIR at http://localhost:$SERVE_PORT (Ctrl-C to stop)"
+  ( cd "$SITE_DIR" && python3 -m http.server "$SERVE_PORT" )
+}
+
+# Create the GCS bucket that stores Terraform state (chicken-and-egg: must
+# exist before `terraform init`). Idempotent.
+cmd_bootstrap() {
+  gcloud_run bash -c '
+    set -euo pipefail
+    : "${TF_STATE_BUCKET:?TF_STATE_BUCKET must be set (Doppler)}"
+    project="${GOOGLE_PROJECT:?GOOGLE_PROJECT must be set (Doppler)}"
+    location="${GOOGLE_REGION:-europe-west1}"
+    if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" >/dev/null 2>&1; then
+      echo "State bucket gs://$TF_STATE_BUCKET already exists."
+    else
+      echo "Creating state bucket gs://$TF_STATE_BUCKET in $location ..."
+      gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+        --project="$project" \
+        --location="$location" \
+        --uniform-bucket-level-access
+      gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+      echo "Done."
+    fi
+  '
+}
+
+cmd_init() {
+  require doppler
+  require terraform
+  ( cd "$TF_DIR" && doppler run -- sh -c "$TFVAR_MAP"'
+      exec terraform init \
+        -backend-config="bucket=$TF_STATE_BUCKET" \
+        -backend-config="prefix=${TF_STATE_PREFIX:-terraform/state}" "$@"
+  ' _ "$@" )
+}
+
+cmd_plan()     { run_tf plan "$@"; }
+cmd_apply()    { run_tf apply "$@"; }
+cmd_destroy()  { run_tf destroy "$@"; }
+cmd_validate() { run_tf validate "$@"; }
+cmd_outputs()  { run_tf output "$@"; }
+cmd_tf()       { run_tf "$@"; }
+
+# terraform fmt needs no secrets.
+cmd_fmt() { require terraform; ( cd "$TF_DIR" && terraform fmt -recursive "$@" ); }
+
+# Sync site/ to the website bucket and invalidate the CDN cache.
+cmd_deploy() {
+  local bucket url_map
+  bucket="$(tf_output website_bucket)"
+  if [ -z "$bucket" ]; then
+    echo "error: could not read 'website_bucket' output. Run './dev apply' first." >&2
+    exit 1
+  fi
+
+  log "Syncing $SITE_DIR -> gs://$bucket"
+  gcloud_run gcloud storage rsync "$SITE_DIR" "gs://$bucket" \
+    --recursive --delete-unmatched-destination-objects
+
+  url_map="$(tf_output url_map_name)"
+  if [ -n "$url_map" ] && [ "$url_map" != "null" ]; then
+    log "Invalidating CDN cache for url-map '$url_map'"
+    gcloud_run gcloud compute url-maps invalidate-cdn-cache "$url_map" \
+      --path "/*" --async
+  fi
+  log "Deploy complete."
+}
+
+usage() {
+  cat <<'EOF'
+dev - manage the static website
+
+Usage: ./dev <command> [args]
+
+Local:
+  serve                 Serve site/ locally (http://localhost:8000)
+
+Infra (Terraform, via Doppler):
+  bootstrap             Create the GCS bucket that holds Terraform state
+  init [args]           terraform init (backend configured from env)
+  plan [args]           terraform plan
+  apply [args]          terraform apply
+  destroy [args]        terraform destroy
+  validate              terraform validate
+  fmt                   terraform fmt -recursive
+  outputs               terraform output
+  tf <args>             run an arbitrary terraform command
+
+Content:
+  deploy                Sync site/ to the bucket and invalidate the CDN
+
+Env vars are supplied by Doppler; see .env.example for the full list.
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    serve)          cmd_serve "$@" ;;
+    bootstrap)      cmd_bootstrap "$@" ;;
+    init)           cmd_init "$@" ;;
+    plan)           cmd_plan "$@" ;;
+    apply)          cmd_apply "$@" ;;
+    destroy)        cmd_destroy "$@" ;;
+    validate)       cmd_validate "$@" ;;
+    fmt)            cmd_fmt "$@" ;;
+    outputs|output) cmd_outputs "$@" ;;
+    deploy)         cmd_deploy "$@" ;;
+    tf|terraform)   cmd_tf "$@" ;;
+    help|-h|--help) usage ;;
+    *) echo "unknown command: $cmd" >&2; echo; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

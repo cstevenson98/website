@@ -1,0 +1,27 @@
+# Secrets / local env
+.env
+.env.local
+*.tfvars
+!*.example.tfvars
+
+# Terraform (keep .terraform.lock.hcl committed)
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# GCP credentials
+*-key.json
+service-account*.json
+key.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
