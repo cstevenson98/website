@@ -8,8 +8,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  secrets:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   deploy:
     name: Deploy site
+    needs: secrets
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     environment: production

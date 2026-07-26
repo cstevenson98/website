@@ -82,7 +82,8 @@ One-time setup:
 3. Push to `main`, then: **Actions → Deploy → Run workflow**.
 
 The job targets the `production` environment, installs Doppler + gcloud, and
-runs `./dev deploy`.
+runs `./dev deploy`. Deploy is gated on a **Gitleaks** secrets scan (also runs
+on every push/PR via the Secrets workflow).
 
 ## Local preview
 
