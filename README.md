@@ -1,97 +1,62 @@
 # Personal website
 
-A static website hosted on Google Cloud: content lives in a **Cloud Storage**
-bucket, served publicly through an **external HTTPS load balancer** with
-**Cloud CDN** and a Google-managed TLS certificate. Infrastructure is defined
-with **Terraform**; secrets/config are injected with **Doppler**.
-
-No backend, no build step yet — just static files in `site/`.
+A math-friendly personal site built with **Eleventy** (Markdown → static HTML,
+**KaTeX** for math), hosted on Google Cloud Storage. Infrastructure is
+**Terraform**; secrets are injected with **Doppler**.
 
 ## Layout
 
 ```
 .
-├── .github/workflows/  # GitHub Actions (manual deploy on main)
-├── dev                 # management script (serve / terraform / deploy)
-├── site/               # static site content (deployed to the bucket)
-│   ├── index.html
-│   └── 404.html
-├── terraform/          # infrastructure (bucket, LB, CDN, TLS)
-└── .env.example        # documents the env vars Doppler must provide
+├── .github/workflows/  # Secrets scan + manual deploy on main
+├── src/                # Eleventy content (Markdown, layouts, CSS)
+│   ├── posts/          # Blog posts (.md with $...$ / $$...$$ math)
+│   └── _includes/      # Nunjucks layouts
+├── _site/              # Build output (gitignored; uploaded on deploy)
+├── eleventy.config.js
+├── package.json
+├── dev                 # management script (serve / build / terraform / deploy)
+├── terraform/          # bucket, optional LB/CDN/TLS
+└── .env.example
 ```
 
 ## Prerequisites
 
+- Node.js >= 20 and npm (see nix-config `node-support`)
 - [Doppler CLI](https://docs.doppler.com/docs/install-cli)
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
 - [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud`)
-- `python3` (only for `./dev serve`)
 
-## One-time setup
+## Content
 
-1. **Create a GCP service account** with roles to manage the resources
-   (e.g. `roles/storage.admin` and `roles/compute.admin`), and download a JSON key.
+Write posts as Markdown under `src/posts/`. Use KaTeX delimiters:
 
-2. **Configure Doppler.** Link this repo to a Doppler project/config and add the
-   secrets listed in `.env.example`:
+- Inline: `$E = mc^2$`
+- Display: `$$ ... $$`
 
-   ```bash
-   doppler setup
-   # then set each secret, e.g.:
-   doppler secrets set GOOGLE_PROJECT GOOGLE_REGION TF_STATE_BUCKET BUCKET_NAME ...
-   ```
+```bash
+npm install          # once
+./dev serve          # live reload at http://localhost:8000
+./dev build          # write _site/
+```
 
-   Paste the service-account JSON as the `GOOGLE_CREDENTIALS` secret.
+## One-time GCP setup
 
-   Doppler secret names are UPPERCASE; the `dev` script maps them to the
-   lowercase `TF_VAR_*` variables Terraform expects (see `.env.example`).
-
-3. **Create the Terraform state bucket:**
-
-   ```bash
-   ./dev bootstrap
-   ```
+1. Create a GCP service account (`roles/storage.admin`, `roles/compute.admin`) and put the JSON key in Doppler as `GOOGLE_CREDENTIALS`.
+2. `doppler setup` and set secrets from `.env.example`.
+3. `./dev bootstrap` → `./dev init` → `./dev apply`.
 
 ## Deploy
 
 ```bash
-./dev init          # terraform init (backend configured from env)
-./dev plan          # review changes
-./dev apply         # create the bucket (+ LB/CDN/TLS if DOMAIN_NAME set)
-./dev deploy        # upload site/ to the bucket and invalidate the CDN
+./dev deploy         # builds with Eleventy, syncs _site/, invalidates CDN
 ```
 
-If you set `DOMAIN_NAME`, point your DNS **A record** at the load balancer
-IP (`./dev outputs` shows `load_balancer_ip`). The managed certificate becomes
-active a few minutes to a few hours after DNS resolves.
+Or: **Actions → Deploy → Run workflow** on `main` (needs `DOPPLER_TOKEN` on the `production` environment).
 
-Before a domain is configured, the site is reachable at the `bucket_public_url`
-output.
-
-## GitHub Actions (manual deploy)
-
-A **Deploy** workflow runs only from `main` via the Actions UI button
-(`workflow_dispatch`). It uses Doppler for secrets — the same path as local.
-
-One-time setup:
-
-1. In Doppler → project `website` → config `dev` (or `prd`), create a
-   **Service Token**.
-2. In GitHub → repo → Settings → Environments → **production**, add
-   an environment secret named `DOPPLER_TOKEN` with that token value.
-3. Push to `main`, then: **Actions → Deploy → Run workflow**.
-
-The job targets the `production` environment, installs Doppler + gcloud, and
-runs `./dev deploy`. Deploy is gated on a **Gitleaks** secrets scan (also runs
-on every push/PR via the Secrets workflow).
-
-## Local preview
-
-```bash
-./dev serve         # http://localhost:8000
-```
+Live URL (no custom domain yet):  
+https://storage.googleapis.com/personal-website-503008-site/index.html
 
 ## Common commands
 
-Run `./dev help` for the full list. Everything that touches GCP runs under
-`doppler run --`, so secrets never live on disk.
+Run `./dev help`. GCP commands use `doppler run --`.

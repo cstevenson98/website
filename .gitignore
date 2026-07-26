@@ -5,6 +5,11 @@ token.txt
 *.tfvars
 !*.example.tfvars
 
+# Node / Eleventy
+node_modules/
+_site/
+package-lock.json.bak
+
 # Terraform (keep .terraform.lock.hcl committed)
 terraform/.terraform/
 *.tfstate

@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="$ROOT_DIR/terraform"
-SITE_DIR="$ROOT_DIR/site"
+DIST_DIR="$ROOT_DIR/_site"
 SERVE_PORT="${SERVE_PORT:-8000}"
 
 # ---------------------------------------------------------------------------
@@ -72,13 +72,27 @@ gcloud_run() {
   ' _ "$@"
 }
 
+ensure_node_deps() {
+  require npm
+  if [ ! -d "$ROOT_DIR/node_modules" ]; then
+    log "Installing npm dependencies"
+    ( cd "$ROOT_DIR" && npm ci )
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+cmd_build() {
+  ensure_node_deps
+  log "Building site with Eleventy -> $DIST_DIR"
+  ( cd "$ROOT_DIR" && npm run build )
+}
+
 cmd_serve() {
-  require python3
-  log "Serving $SITE_DIR at http://localhost:$SERVE_PORT (Ctrl-C to stop)"
-  ( cd "$SITE_DIR" && python3 -m http.server "$SERVE_PORT" )
+  ensure_node_deps
+  log "Serving Eleventy at http://localhost:$SERVE_PORT (Ctrl-C to stop)"
+  ( cd "$ROOT_DIR" && npx @11ty/eleventy --serve --port="$SERVE_PORT" )
 }
 
 # Create the GCS bucket that stores Terraform state (chicken-and-egg: must
@@ -123,11 +137,13 @@ cmd_tf()       { run_tf "$@"; }
 # terraform fmt needs no secrets.
 cmd_fmt() { require terraform; ( cd "$TF_DIR" && terraform fmt -recursive "$@" ); }
 
-# Sync site/ to the website bucket and invalidate the CDN cache.
+# Build, sync _site/ to the website bucket, and invalidate the CDN cache.
 # Bucket comes from Doppler (BUCKET_NAME) so CI can deploy without terraform.
 # CDN invalidation uses URL_MAP_NAME if set, else terraform output when available.
 cmd_deploy() {
   require doppler
+  cmd_build
+
   local bucket url_map
   bucket="$(doppler run -- printenv BUCKET_NAME 2>/dev/null || true)"
   if [ -z "$bucket" ]; then
@@ -139,10 +155,15 @@ cmd_deploy() {
     exit 1
   fi
 
-  log "Syncing $SITE_DIR -> gs://$bucket"
+  if [ ! -d "$DIST_DIR" ]; then
+    echo "error: build output $DIST_DIR missing after build." >&2
+    exit 1
+  fi
+
+  log "Syncing $DIST_DIR -> gs://$bucket"
   # no-cache: browsers revalidate on each visit so deploys show up without a hard refresh.
   # When you add fingerprinted assets later, give those a long max-age and keep HTML on no-cache.
-  gcloud_run gcloud storage rsync "$SITE_DIR" "gs://$bucket" \
+  gcloud_run gcloud storage rsync "$DIST_DIR" "gs://$bucket" \
     --recursive \
     --delete-unmatched-destination-objects \
     --cache-control="no-cache"
@@ -171,7 +192,8 @@ dev - manage the static website
 Usage: ./dev <command> [args]
 
 Local:
-  serve                 Serve site/ locally (http://localhost:8000)
+  serve                 Eleventy live reload (http://localhost:8000)
+  build                 Build Markdown/KaTeX site into _site/
 
 Infra (Terraform, via Doppler):
   bootstrap             Create the GCS bucket that holds Terraform state
@@ -185,7 +207,7 @@ Infra (Terraform, via Doppler):
   tf <args>             run an arbitrary terraform command
 
 Content:
-  deploy                Sync site/ to the bucket and invalidate the CDN
+  deploy                Build, sync _site/ to the bucket, invalidate CDN
 
 Env vars are supplied by Doppler; see .env.example for the full list.
 EOF
@@ -196,6 +218,7 @@ main() {
   shift || true
   case "$cmd" in
     serve)          cmd_serve "$@" ;;
+    build)          cmd_build "$@" ;;
     bootstrap)      cmd_bootstrap "$@" ;;
     init)           cmd_init "$@" ;;
     plan)           cmd_plan "$@" ;;
