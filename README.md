@@ -77,11 +77,12 @@ One-time setup:
 
 1. In Doppler → project `website` → config `dev` (or `prd`), create a
    **Service Token**.
-2. In GitHub → repo → Settings → Secrets and variables → Actions, add
-   `DOPPLER_TOKEN` with that token value.
+2. In GitHub → repo → Settings → Environments → **production**, add
+   an environment secret named `DOPPLER_TOKEN` with that token value.
 3. Push to `main`, then: **Actions → Deploy → Run workflow**.
 
-The job installs Doppler + gcloud and runs `./dev deploy`.
+The job targets the `production` environment, installs Doppler + gcloud, and
+runs `./dev deploy`.
 
 ## Local preview
 
